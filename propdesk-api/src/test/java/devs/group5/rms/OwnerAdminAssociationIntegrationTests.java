@@ -1,0 +1,294 @@
+package devs.group5.rms;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import devs.group5.rms.repositories.AdminRepository;
+import devs.group5.rms.repositories.ExpenseRepository;
+import devs.group5.rms.repositories.OwnerRepository;
+import devs.group5.rms.repositories.PropertyRepository;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.test.context.ActiveProfiles;
+
+import java.io.IOException;
+import java.math.BigDecimal;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+// Verifies that owners can authorize admins and that admins gain access to owner-managed actions.
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles("test")
+class OwnerAdminAssociationIntegrationTests {
+    @Autowired
+    private ExpenseRepository expenseRepository;
+
+    @Autowired
+    private PropertyRepository propertyRepository;
+
+    @Autowired
+    private OwnerRepository ownerRepository;
+
+    @Autowired
+    private AdminRepository adminRepository;
+
+    @LocalServerPort
+    private int port;
+
+    private final HttpClient httpClient = HttpClient.newHttpClient();
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @BeforeEach
+    void cleanDatabase() {
+        expenseRepository.deleteAll();
+        propertyRepository.deleteAll();
+        ownerRepository.deleteAll();
+        adminRepository.deleteAll();
+    }
+
+    @Test
+    void ownerCanAssociateWithAdminAndAdminCanManageOwnerProperty() throws Exception {
+        var suffix = UUID.randomUUID().toString();
+        var ownerName = "owner-" + suffix;
+        var adminName = "admin-" + suffix;
+        var password = "password123";
+
+        var ownerId = registerOwner(ownerName, password);
+        var adminId = registerAdmin(adminName, password);
+        var ownerToken = login(ownerName, password);
+
+        var propertyResponse = postJson(
+                "/properties",
+                """
+                        {
+                          "propertyName": "Torre Norte",
+                          "propertyAddress": "Calle 123",
+                          "pictureUrl": "",
+                          "ownerId": "%s",
+                          "apartmentRanges": []
+                        }
+                        """.formatted(ownerId),
+                ownerToken
+        );
+
+        assertThat(propertyResponse.statusCode()).isEqualTo(200);
+        var propertyId = UUID.fromString(objectMapper.readTree(propertyResponse.body()).get("id").asText());
+
+        var apartmentResponse = postJson(
+                "/apartments",
+                """
+                        [
+                          {
+                            "number": 1,
+                            "propertyId": "%s",
+                            "amount_due": 1000.00
+                          }
+                        ]
+                        """.formatted(propertyId),
+                ownerToken
+        );
+
+        assertThat(apartmentResponse.statusCode()).isEqualTo(200);
+        var apartmentId = UUID.fromString(objectMapper.readTree(apartmentResponse.body()).get(0).get("id").asText());
+
+        var associationResponse = postJson(
+                "/owners/me/admin",
+                """
+                        {
+                          "adminId": "%s",
+                          "adminCut": 12.5
+                        }
+                        """.formatted(adminId),
+                ownerToken
+        );
+
+        // This request is the real proof that the owner can choose a specific admin.
+        assertThat(associationResponse.statusCode()).isEqualTo(200);
+
+        JsonNode associationJson = objectMapper.readTree(associationResponse.body());
+        assertThat(associationJson.get("ownerId").asText()).isEqualTo(ownerId.toString());
+        assertThat(associationJson.get("adminId").asText()).isEqualTo(adminId.toString());
+        assertThat(associationJson.get("adminCut").decimalValue()).isEqualByComparingTo(new BigDecimal("12.5"));
+        assertThat(associationJson.get("associationAccepted").asBoolean()).isFalse();
+
+        var adminToken = login(adminName, password);
+
+        var pendingExpenseResponse = postJson(
+                "/apartments/%s/expenses".formatted(apartmentId),
+                """
+                        {
+                          "description": "Lobby lights",
+                          "amount": 1250.00
+                        }
+                        """,
+                adminToken
+        );
+
+        assertThat(pendingExpenseResponse.statusCode()).isEqualTo(400);
+
+        var acceptResponse = postJson(
+                "/admins/me/owners/%s/accept".formatted(ownerId),
+                "{}",
+                adminToken
+        );
+
+        assertThat(acceptResponse.statusCode()).isEqualTo(200);
+
+        var expenseResponse = postJson(
+                "/apartments/%s/expenses".formatted(apartmentId),
+                """
+                        {
+                          "description": "Lobby lights",
+                          "amount": 1250.00
+                        }
+                        """,
+                adminToken
+        );
+
+        assertThat(expenseResponse.statusCode()).isEqualTo(200);
+
+        var expenseJson = objectMapper.readTree(expenseResponse.body());
+        var expenseId = UUID.fromString(expenseJson.get("id").asText());
+
+        assertThat(ownerRepository.findById(ownerId))
+                .get()
+                .satisfies(owner -> {
+                    // This assertion proves the chosen admin was actually persisted for the owner.
+                    assertThat(owner.getAdmin()).isNotNull();
+                    assertThat(owner.getAdmin().getId()).isEqualTo(adminId);
+                    assertThat(owner.getAdminCut()).isEqualByComparingTo(new BigDecimal("12.5"));
+                    assertThat(owner.getAdminAssociationAccepted()).isTrue();
+                });
+
+        assertThat(expenseRepository.findById(expenseId))
+                .get()
+                .satisfies(expense -> {
+                    assertThat(expense.getApartment().getId()).isEqualTo(apartmentId);
+                    assertThat(expense.getDescription()).isEqualTo("Lobby lights");
+                });
+    }
+
+    @Test
+    void adminCanAcceptOwnerRequestAssignedToHim() throws Exception {
+        var suffix = UUID.randomUUID().toString();
+        var ownerName = "owner-" + suffix;
+        var adminName = "admin-" + suffix;
+        var password = "password123";
+
+        var ownerId = registerOwner(ownerName, password);
+        var adminId = registerAdmin(adminName, password);
+        var ownerToken = login(ownerName, password);
+        var adminToken = login(adminName, password);
+
+        var requestResponse = postJson(
+                "/owners/me/admin",
+                """
+                        {
+                          "adminId": "%s",
+                          "adminCut": 8.5
+                        }
+                        """.formatted(adminId),
+                ownerToken
+        );
+
+        assertThat(requestResponse.statusCode()).isEqualTo(200);
+
+        var associationResponse = postJson(
+                "/admins/me/owners/%s/accept".formatted(ownerId),
+                "{}",
+                adminToken
+        );
+
+        assertThat(associationResponse.statusCode()).isEqualTo(200);
+
+        JsonNode associationJson = objectMapper.readTree(associationResponse.body());
+        assertThat(associationJson.get("ownerId").asText()).isEqualTo(ownerId.toString());
+        assertThat(associationJson.get("adminId").asText()).isEqualTo(adminId.toString());
+        assertThat(associationJson.get("adminCut").decimalValue()).isEqualByComparingTo(new BigDecimal("8.5"));
+        assertThat(associationJson.get("associationAccepted").asBoolean()).isTrue();
+
+        assertThat(ownerRepository.findById(ownerId))
+                .get()
+                .satisfies(owner -> {
+                    assertThat(owner.getAdmin()).isNotNull();
+                    assertThat(owner.getAdmin().getId()).isEqualTo(adminId);
+                    assertThat(owner.getAdminCut()).isEqualByComparingTo(new BigDecimal("8.5"));
+                    assertThat(owner.getAdminAssociationAccepted()).isTrue();
+                });
+    }
+
+    // Registers an owner account and returns the created user id.
+    private UUID registerOwner(String name, String password) throws IOException, InterruptedException {
+        var response = postJson(
+                "/auth/register/owner",
+                """
+                        {
+                          "name": "%s",
+                          "email": "%s",
+                          "password": "%s"
+                        }
+                        """.formatted(name, name + "@test.com", password),
+                null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        return UUID.fromString(objectMapper.readTree(response.body()).get("id").asText());
+    }
+
+    // Registers an admin account and returns the created user id.
+    private UUID registerAdmin(String name, String password) throws IOException, InterruptedException {
+        var response = postJson(
+                "/auth/register/admin",
+                """
+                        {
+                          "name": "%s",
+                          "email": "%s",
+                          "password": "%s"
+                        }
+                        """.formatted(name, name + "@test.com", password),
+                null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        return UUID.fromString(objectMapper.readTree(response.body()).get("id").asText());
+    }
+
+    // Logs in a user and returns the access token for authenticated requests.
+    private String login(String name, String password) throws IOException, InterruptedException {
+        var response = postJson(
+                "/auth/login",
+                """
+                        {
+                          "email": "%s",
+                          "password": "%s"
+                        }
+                        """.formatted(name + "@test.com", password),
+                null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        return objectMapper.readTree(response.body()).get("access").asText();
+    }
+
+    // Sends authenticated JSON requests against the embedded test server.
+    private HttpResponse<String> postJson(String path, String body, String accessToken)
+            throws IOException, InterruptedException {
+        var requestBuilder = HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port + path))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body));
+
+        if (accessToken != null) {
+            requestBuilder.header("Authorization", "Bearer " + accessToken);
+        }
+
+        return httpClient.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+}
