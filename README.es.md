@@ -189,9 +189,9 @@ propdesk/
 Este proyecto fue desarrollado en colaboración por:
 - **Noel Escobar** ([@Noel0410](https://github.com/Noel0410)) - *Arquitectura Frontend, UI/UX e Integración Full-Stack*
 - **Camilo Sassone** ([@Vityyy](https://github.com/Vityyy))
-- **Valentín Bersi**
+- **Valentín Bersi** ([@valentinbersi](https://github.com/valentinbersi))
+- **Giuseppe Mancinelli** ([@Giuse-04](https://github.com/Giuse-04))
 - **Damaris Juares**
-- **Giuliano Mancinelli**
 
 ---
 
