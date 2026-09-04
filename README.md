@@ -1,3 +1,7 @@
+<p align="right">
+  <strong>🇺🇸 English</strong> | <a href="README.es.md">🇦🇷 Español</a>
+</p>
+
 <div align="center">
 
 # 🏢 PropDesk
@@ -174,7 +178,8 @@ propdesk/
 ├── assets/media/          # Screenshots and demo GIFs
 ├── docker-compose.yml     # Multi-container orchestration (DB + API + Web)
 ├── .env.example           # Reference environment variables
-└── README.md              # Project documentation
+├── README.md              # Project documentation (English)
+└── README.es.md           # Project documentation (Spanish)
 ```
 
 ---
