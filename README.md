@@ -186,7 +186,7 @@ This project was built collaboratively by:
 - **Camilo Sassone**
 - **Valentín Bersi**
 - **Damaris Juares**
-- **Giuliano Mancinelli**
+- **Giusepe Mancinelli**
 
 ---
 
