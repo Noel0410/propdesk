@@ -1,0 +1,63 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: propdesk-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-propdesk}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-propdesk}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./propdesk-api
+      dockerfile: Dockerfile
+    container_name: propdesk-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: ${PORT:-8080}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-propdesk}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
+      JWT_SECRET: ${JWT_SECRET:-404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
+      ALGORITHM: ${ALGORITHM:-HmacSHA256}
+      ACCESS_TOKEN_EXPIRE_MILIS: ${ACCESS_TOKEN_EXPIRE_MILIS:-3600000}
+      REFRESH_TOKEN_EXPIRE_MILIS: ${REFRESH_TOKEN_EXPIRE_MILIS:-86400000}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      OPENAPI_ENABLED: ${OPENAPI_ENABLED:-true}
+      SWAGGER_UI_ENABLED: ${SWAGGER_UI_ENABLED:-true}
+    ports:
+      - "${PORT:-8080}:8080"
+
+  web:
+    build:
+      context: ./propdesk-web
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=${VITE_API_URL:-http://localhost:8080}
+    container_name: propdesk-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      BACKEND_URL: http://api:8080
+    ports:
+      - "3000:80"
+
+volumes:
+  postgres_data:
